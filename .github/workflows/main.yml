@@ -21,200 +21,94 @@ jobs:
           set -e
           sw_vers
           xcodebuild -version
-          echo "---- 仓库内容 ----"
+          echo "---- 仓库根目录 ----"
           ls -la
 
-      - name: 3 挑版本最高的源码
+      - name: 3 定位 6.6.1 源码（只认这一个，绝不编错版本）
         id: locate
         run: |
           set -eu
+          WANT="LSPakManager-Source-v6.6.1"
+          ROOT=""
 
-          ver_of() {
-            grep -o 'CFBundleShortVersionString: *"[0-9.]*"' "$1" 2>/dev/null | head -n 1 | sed 's/.*"\([0-9.]*\)"/\1/' || true
-          }
+          # A. 仓库根目录直接就是工程
+          if [ -f "project.yml" ] && [ -d "Sources" ]; then
+            V=$(grep -o 'CFBundleShortVersionString: *"[0-9.]*"' project.yml | head -n1 | sed 's/.*"\([0-9.]*\)"/\1/')
+            if [ "$V" = "6.6.1" ]; then ROOT="."; fi
+          fi
 
-          # $1 > $2 → 退出码 0
-          ver_gt() {
-            awk -v a="$1" -v b="$2" 'BEGIN{
-              split(a,x,"."); split(b,y,".");
-              for(i=1;i<=3;i++){
-                if((x[i]+0)>(y[i]+0)) exit 0;
-                if((x[i]+0)<(y[i]+0)) exit 1;
-              }
-              exit 1;
-            }'
-          }
+          # B. 已经解开的文件夹
+          if [ -z "$ROOT" ]; then
+            for d in "$WANT" "./$WANT"; do
+              if [ -z "$ROOT" ] && [ -f "$d/project.yml" ]; then ROOT="$d"; fi
+            done
+          fi
 
-          BEST_ROOT=""
-          BEST_VER="0.0"
-          BEST_SRC="无"
-
-          # $3 = gt（必须更高才换）/ ge（同版本也换，压缩包用这个）
-          consider() {
-            R="$1"; S="$2"; M="${3:-gt}"
-            [ -f "$R/project.yml" ] || return 0
-            [ -d "$R/Sources" ] || return 0
-            V=$(ver_of "$R/project.yml"); [ -z "${V:-}" ] && V="0.0"
-            echo "候选：$S  版本 $V"
-            if [ -z "$BEST_ROOT" ]; then
-              BEST_ROOT="$R"; BEST_VER="$V"; BEST_SRC="$S"
-              return 0
-            fi
-            if [ "$M" = "ge" ]; then
-              if ! ver_gt "$BEST_VER" "$V"; then
-                echo "  → 换成它（同版本优先压缩包 / 版本更高）"
-                BEST_ROOT="$R"; BEST_VER="$V"; BEST_SRC="$S"
+          # C. 压缩包：一个个试，只认版本号 = 6.6.1 的那个
+          if [ -z "$ROOT" ]; then
+            for f in $(find . -maxdepth 2 -type f -name "*.zip" -not -path "./.git/*" 2>/dev/null); do
+              [ -z "$ROOT" ] || break
+              echo "---- 试压缩包：$f ----"
+              rm -rf _src && mkdir -p _src
+              python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$f" _src 2>/dev/null \
+                || unzip -oq "$f" -d _src 2>/dev/null || true
+              P=$(find _src -maxdepth 3 -name project.yml | head -n1 || true)
+              if [ -n "${P:-}" ]; then
+                VV=$(grep -o 'CFBundleShortVersionString: *"[0-9.]*"' "$P" | head -n1 | sed 's/.*"\([0-9.]*\)"/\1/')
+                echo "   里面的版本 = ${VV:-?}"
+                if [ "$VV" = "6.6.1" ]; then ROOT=$(dirname "$P"); fi
               fi
-            else
-              if ver_gt "$V" "$BEST_VER"; then
-                echo "  → 换成它（版本更高）"
-                BEST_ROOT="$R"; BEST_VER="$V"; BEST_SRC="$S"
-              fi
-            fi
-          }
+            done
+          fi
 
-          # A. 仓库根目录本身就是工程
-          consider "." "根目录工程" gt
-
-          # B. 仓库里已经解开的工程文件夹
-          find . -maxdepth 4 -name project.yml -not -path "./.git/*" -not -path "./_unpack/*" -not -path "./_unprobe/*" -not -path "./_src_zip_*" > /tmp/projs.txt 2>/dev/null || true
-          while IFS= read -r P; do
-            [ -z "$P" ] && continue
-            D=$(dirname "$P"); D=${D#./}
-            [ "$D" = "." ] && continue
-            consider "$D" "文件夹 $D" gt
-          done < /tmp/projs.txt
-
-          # C. 仓库里的源码压缩包（同版本时优先于文件夹）
-          # 每个包解到自己的目录，选中的那个就一直留着给后面所有步骤用
-          find . -maxdepth 3 -type f -name "*.zip" -not -path "./.git/*" > /tmp/zips.txt 2>/dev/null || true
-          ZN=0
-          while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            ZN=$((ZN+1))
-            UD="_src_zip_$ZN"
-            echo "---- 试探压缩包：$f ----"
-            rm -rf "$UD" && mkdir -p "$UD"
-            # 先用 python 解压（对中文文件名最稳），失败再退回 unzip
-            if python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$f" "$UD" 2>/tmp/unzip_err.txt; then
-              echo "解压方式：python zipfile ✅"
-            else
-              echo "python 解压不顺利，退回 unzip 再试"
-              if ! unzip -oq "$f" -d "$UD" 2>>/tmp/unzip_err.txt; then
-                echo "跳过（不是有效压缩包）：$f"
-                tail -n 5 /tmp/unzip_err.txt || true
-                rm -rf "$UD"
-                continue
-              fi
-              echo "解压方式：unzip ✅"
-            fi
-            P=$(find "$UD" -maxdepth 6 -name project.yml | head -n 1 || true)
-            if [ -z "${P:-}" ]; then
-              # python 解出来文件名编码不对时，换 unzip 再解一次
-              echo "没定位到工程，换 unzip 再解一次"
-              rm -rf "$UD" && mkdir -p "$UD"
-              unzip -oq "$f" -d "$UD" 2>/dev/null || true
-              P=$(find "$UD" -maxdepth 6 -name project.yml | head -n 1 || true)
-            fi
-            if [ -z "${P:-}" ]; then
-              echo "跳过（里面没有工程）：$f"
-              rm -rf "$UD"
-              continue
-            fi
-            D=$(dirname "$P")
-            if [ "$D" = "$UD" ]; then
-              RD="$UD"
-            else
-              RD="$UD/${D#$UD/}"
-            fi
-            [ -d "$RD/Sources" ] || echo "注意：$RD 里没有 Sources"
-            consider "$RD" "压缩包 $f" ge
-          done < /tmp/zips.txt
-
-          # 清掉没被选中的解压目录，只留选中的那个
-          for d in _src_zip_*; do
-            [ -d "$d" ] || continue
-            case "$BEST_ROOT" in
-              "$d"|"$d"/*) ;;
-              *) rm -rf "$d" ;;
-            esac
-          done
-          rm -rf _unprobe _unpack
-
-          if [ -z "$BEST_ROOT" ]; then
-            echo "::error::仓库里没有找到工程：根目录、子文件夹、压缩包里都没有 project.yml"
-            echo "---- 仓库实际内容 ----"
+          if [ -z "$ROOT" ]; then
+            echo "::error::没找到 6.6.1 的源码。把 LSPakManager-Source-v6.6.1.zip 原样传到仓库根目录，别解压、别改名，再点一次 Run workflow。"
             ls -la
             exit 1
           fi
 
-          echo "======================================"
-          if [ ! -d "$BEST_ROOT/Sources" ]; then
-            echo "::error::选中的工程目录里没有 Sources：$BEST_ROOT"
-            ls -la "$BEST_ROOT" || true
+          V=$(grep -o 'CFBundleShortVersionString: *"[0-9.]*"' "$ROOT/project.yml" | head -n1 | sed 's/.*"\([0-9.]*\)"/\1/')
+          echo "工程目录 = $ROOT"
+          echo "版本 = $V"
+          if [ "$V" != "6.6.1" ]; then
+            echo "::error::挑中的源码版本是 $V，不是 6.6.1。请确认传的是 LSPakManager-Source-v6.6.1.zip。"
             exit 1
           fi
-          echo "选中的源码 = $BEST_SRC"
-          echo "版本 = $BEST_VER"
-          echo "工程目录 = $BEST_ROOT"
 
-          # ---- 版本下限闸：低于 11.0 直接停，绝不编旧包 ----
-          # 旧版（6.x/7.x）没有容器通道，在 18/26 上要么被挡要么闪退，
-          # 编出来装上去只会白折腾一轮，所以这里提前拦死。
-          MIN_VER="12.0"
-          if ver_gt "$MIN_VER" "$BEST_VER"; then
-            echo "::error::仓库里能挑到的最高源码是 $BEST_VER，低于 $MIN_VER，已停止构建（旧版定位和判定有洞，编出来只会白跑一轮）"
-            echo "---- 仓库里找到的源码候选 ----"
-            find . -maxdepth 3 -type f -name "*.zip" -not -path "./.git/*" | sed 's/^/压缩包: /' || true
-            find . -maxdepth 4 -name project.yml -not -path "./.git/*" | sed 's/^/工程:   /' || true
-            echo "---- 怎么办 ----"
-            echo "把 LSPakManager-Source-v12.0.zip 原样传到仓库根目录（别解压、别改名），再点 Run workflow"
-            {
-              echo "## ⛔ 这次没编译：仓库里的源码版本太低"
-              echo ""
-              echo "- 挑中的最高版本：**$BEST_VER**（来源 $BEST_SRC）"
-              echo "- 需要的最低版本：**$MIN_VER**"
-              echo ""
-              echo "把 \`LSPakManager-Source-v$MIN_VER.zip\` 原样传到仓库根目录，再点一次 Run workflow 就行。"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-          echo "---- Swift 源文件 ----"
-          ls -la "$BEST_ROOT/Sources"
+          echo "---- 这次要编的 Swift 文件 ----"
+          ls -1 "$ROOT/Sources"/*.swift
           echo "---- 内核库 ----"
-          ls -la "$BEST_ROOT/Sources/Libs" || true
-          echo "---- 顶层 Swift 源文件（这次会被编译的）----"
-          ls -1 "$BEST_ROOT/Sources"/*.swift || true
-          if [ -f "$BEST_ROOT/Sources/PakEngine.swift" ]; then
-            echo "---- 改字引擎 PakEngine.swift 关键行（自查用）----"
-            sed -n '128,150p' "$BEST_ROOT/Sources/PakEngine.swift" || true
-          else
-            echo "本版没有 PakEngine.swift（v7.x 起改字引擎已移除），正常 ✅"
-          fi
-          echo "======================================"
-          echo "root=$BEST_ROOT" >> "$GITHUB_OUTPUT"
+          ls -l "$ROOT/Sources/Libs"
+
+          # 功能自检：确认这版的两处改动真的在源码里
+          grep -q "listImportSources" "$ROOT/Sources/LSPaths.swift" || { echo "::error::LSPaths.swift 里没有 listImportSources"; exit 1; }
+          grep -q "importedDir().path" "$ROOT/Sources/LSPaths.swift" || { echo "::error::导入源没有包含 App 库（源码是旧的）"; exit 1; }
+          grep -q "parkSource" "$ROOT/Sources/AutoIO.swift" || { echo "::error::AutoIO.swift 里没有 parkSource（源码是旧的）"; exit 1; }
+          grep -q "已在App库里" "$ROOT/Sources/AutoIO.swift" || { echo "::error::AutoIO.swift 里没有库文件保护（源码是旧的）"; exit 1; }
+          echo "功能自检通过 ✅（App 库 + 库文件保护都在）"
+
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "ver=$V" >> "$GITHUB_OUTPUT"
           {
-            echo "## 🔎 本次选中的源码"
+            echo "## 本次构建"
             echo ""
-            echo "- 版本：**$BEST_VER**"
-            echo "- 来源：$BEST_SRC"
-            echo "- 目录：\`$BEST_ROOT\`"
+            echo "- 版本：**$V**"
+            echo "- 目录：\`$ROOT\`"
             echo ""
-            echo "下面出现「✅ ipa 直链」才说明编译成功。"
+            echo "下面出现「ipa 直链」才算编好。"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 4 准备 XcodeGen
         run: |
           set -eu
           if command -v xcodegen >/dev/null 2>&1; then
-            echo "系统自带: $(xcodegen --version)"
-            exit 0
+            echo "系统自带 xcodegen: $(xcodegen --version)"; exit 0
           fi
           mkdir -p "$HOME/xg"
           curl -L --fail --retry 3 -o /tmp/xg.zip https://github.com/yonaskolb/XcodeGen/releases/latest/download/xcodegen.zip
           unzip -q -o /tmp/xg.zip -d "$HOME/xg"
-          BIN=$(find "$HOME/xg" -type f -name xcodegen -perm -u+x | head -n 1 || true)
-          [ -z "$BIN" ] && BIN=$(find "$HOME/xg" -type f -name xcodegen | head -n 1 || true)
+          BIN=$(find "$HOME/xg" -type f -name xcodegen -perm -u+x | head -n1 || true)
+          [ -z "$BIN" ] && BIN=$(find "$HOME/xg" -type f -name xcodegen | head -n1 || true)
           chmod +x "$BIN"
           echo "$(dirname "$BIN")" >> "$GITHUB_PATH"
           echo "装好了: $("$BIN" --version)"
@@ -228,108 +122,6 @@ jobs:
           xcodegen generate
           ls -la
           xcodebuild -list -project LSPakManager.xcodeproj
-
-      - name: 5.5 校验工程与目录通道
-        env:
-          SRC_ROOT: ${{ steps.locate.outputs.root }}
-        run: |
-          set -eu
-          cd "$SRC_ROOT"
-          echo "---- 内核通道源文件（这版走 B 方案，这些一个都不能少）----"
-          for f in \
-            Sources/Kernel/KernelEngine.swift \
-            Sources/Kernel/SbxSurgeon.h \
-            Sources/Kernel/SbxSurgeon.m \
-            Sources/Kernel/CrashGuard.c \
-            Sources/Kernel/OffsetsDoctor.swift \
-            Sources/Kernel/kexploit/darksword.m \
-            Sources/Kernel/kexploit/offsets.m \
-            Sources/Kernel/kexploit/pe/sbx.m \
-            Sources/Libs/libxpf.dylib \
-            Sources/Libs/libgrabkernel2.dylib ; do
-            [ -f "$f" ] || { echo "::error::缺 $f（这版走内核通道，这个是必须的）"; exit 1; }
-          done
-          echo "内核通道源文件齐全 ✅"
-          echo "---- 桥接头 ----"
-          grep -q "SbxSurgeon.h" Sources/Kernel/LSPakManager-Bridging-Header.h || { echo "::error::桥接头没引 SbxSurgeon.h"; exit 1; }
-          grep -q "darksword.h"  Sources/Kernel/LSPakManager-Bridging-Header.h || { echo "::error::桥接头没引 darksword.h"; exit 1; }
-          echo "桥接头齐全 ✅"
-          echo "---- 版本字符串一致性（日志 / 报告 / 工程 / 判定门槛必须都是 11.1）----"
-          grep -q "ds_phys_stats" Sources/Kernel/kexploit/darksword.m || { echo "::error::darksword.m 里没有 v10.2 的物理路径刹车（ds_phys_stats），源码是旧的"; exit 1; }
-          grep -q "v12.0 本次运行" Sources/Kernel/kexploit/darksword.m || { echo "::error::darksword.m 里的日志版本不是 v11.1（装错包最难查，这里先拦）"; exit 1; }
-          grep -q "内核报告（v12.0）" Sources/Kernel/KernelEngine.swift || { echo "::error::内核报告标题不是 v12.0"; exit 1; }
-          grep -q 'CFBundleShortVersionString: "12.0"' project.yml || { echo "::error::project.yml 版本不是 12.0"; exit 1; }
-          grep -q "0xffffff8000000000ULL" Sources/Kernel/SbxSurgeon.m || { echo "::error::SbxSurgeon.m 里没有 v10.0 的排除式判定（0xffffff80 那一段），说明源码是旧的"; exit 1; }
-          grep -q "sxs_label_scan" Sources/Kernel/SbxSurgeon.m || { echo "::error::SbxSurgeon.m 里没有十六槽打分（v10.0 的认槽逻辑），源码是旧的"; exit 1; }
-          grep -q "sxs_sandbox_selfcheck" Sources/Kernel/SbxSurgeon.m || { echo "::error::SbxSurgeon.m 里没有沙盒自检，源码是旧的"; exit 1; }
-          echo "版本字符串一致 ✅"
-          echo "---- 容器租约通道（v11.0 的主线）----"
-          test -f Sources/Sandbox/MCMPeek.m || { echo "::error::缺 Sources/Sandbox/MCMPeek.m（容器租约实现），源码包不完整"; exit 1; }
-          test -f Sources/Sandbox/MCMPeek.h || { echo "::error::缺 Sources/Sandbox/MCMPeek.h"; exit 1; }
-          grep -q "MCMPeek.m" project.yml || { echo "::error::project.yml 里没挂 MCMPeek.m，租约通道编不进去"; exit 1; }
-          grep -q "fno-objc-arc" project.yml || { echo "::error::MCMPeek.m 没给 -fno-objc-arc，runtime 调用会被 ARC 拦住"; exit 1; }
-          grep -q "openViaLease" Sources/Sandbox/AccessEngine.swift || { echo "::error::AccessEngine 没接租约通道，源码是旧的"; exit 1; }
-          grep -q "MobileHouseArrest" project.yml || { echo "::error::bundle id 没换成容器服务身份，这版的核心就没了"; exit 1; }
-          echo "容器租约通道齐全 ✅"
-
-          echo "---- 门诊接线（v11.1 的核心：通道必须在门诊里真被调用）----"
-          grep -q "func runContainerLadder" Sources/Kernel/KernelEngine.swift || { echo "::error::KernelEngine.swift 里没有 runContainerLadder（门诊接线丢了）"; exit 1; }
-          grep -q "if runContainerLadder() { return }" Sources/Kernel/KernelEngine.swift || { echo "::error::门诊没调用 runContainerLadder —— 通道写了却没跑，跟上版一样的洞"; exit 1; }
-          grep -q "容器通道：" Sources/Kernel/KernelEngine.swift || { echo "::error::报告里没有「容器通道」那一节，失败时看不到结论"; exit 1; }
-          echo "门诊接线 ✅"
-
-          echo "---- v12 专有：身份诊断与内核按钮下线 ----"
-          grep -q "本 App 身份：" Sources/Kernel/KernelEngine.swift || { echo "::error::门诊里没有 bundle id 身份诊断（v12 用来定死冒充有没有被签名工具改掉）"; exit 1; }
-          grep -q "这版不碰内核" Sources/ContentView.swift || { echo "::error::界面还留着内核入口（v12 必须把它下线，上一版整机重启就是从这里来的）"; exit 1; }
-          echo "v12 专有校验 ✅"
-
-          echo "---- 工程里必须嵌内核库 ----"
-          if grep -q "libxpf.dylib" LSPakManager.xcodeproj/project.pbxproj 2>/dev/null; then
-            echo "工程里嵌了 libxpf.dylib ✅"
-          else
-            echo "::error::工程里没嵌 libxpf.dylib，说明 project.yml 没换成 v10.0 的版本"
-            exit 1
-          fi
-          echo "---- 架构（必须 arm64e，否则内核指针还原不了）----"
-          xcodebuild -project LSPakManager.xcodeproj -scheme LSPakManager -showBuildSettings 2>/dev/null | grep -E " ARCHS | VALID_ARCHS | IPHONEOS_DEPLOYMENT_TARGET " | head -5
-
-      - name: 5.8 编译前兜底修正（有哪个修哪个，不强制任何文件必须存在）
-        env:
-          SRC_ROOT: ${{ steps.locate.outputs.root }}
-        run: |
-          set -eu
-          cd "$SRC_ROOT"
-
-          # 改字引擎 PakEngine.swift：v6.x 有，v7.x 起已整块移除。
-          # 所以这里不再强制它存在——有就顺手修，没有就跳过，不算失败。
-          F=Sources/PakEngine.swift
-          if [ -f "$F" ]; then
-            cp "$F" /tmp/PakEngine.before.swift
-            perl -0pi -e 's/let total = fh\.seekToEndOfFile\(\)/let total = Int64(fh.seekToEndOfFile())/g' "$F"
-            perl -0pi -e 's/p\.element\.oldData/p.oldData/g' "$F"
-            echo "---- PakEngine.swift 修正后的关键行 ----"
-            sed -n '128,150p' "$F"
-            if grep -q 'p\.element\.oldData' "$F"; then
-              echo "::error::PakEngine.swift 里仍有 p.element.oldData"
-              exit 1
-            fi
-            if grep -q 'fh\.seekToEndOfFile()' "$F" && ! grep -q 'Int64(fh\.seekToEndOfFile())' "$F"; then
-              echo "::error::PakEngine.swift 里 total 类型没修上"
-              exit 1
-            fi
-            echo "PakEngine.swift 处理完毕 ✅"
-          else
-            echo "本版没有改字引擎 PakEngine.swift（v7.x 起已移除），跳过 ✅"
-          fi
-
-          echo "---- 这次真正参与编译的 Swift 文件 ----"
-          ls -1 Sources/*.swift
-          ls -1 Sources/Sandbox/*.swift
-          echo "---- 必检：容器通道两个源文件 ----"
-          for f in Sources/Sandbox/SandboxBridge.swift Sources/Sandbox/AccessEngine.swift; do
-            [ -f "$f" ] || { echo "::error::缺 $f"; exit 1; }
-          done
-          echo "兜底修正完成 ✅（源码本身没问题时这一步不改变任何东西）"
 
       - name: 6 编译
         env:
@@ -351,107 +143,72 @@ jobs:
             build > /tmp/build.log 2>&1
           RC=$?
           echo "xcodebuild 退出码 = $RC"
-          echo "=================================================="
-          echo "真正的报错（error: 开头的行，就在下面这几行里）"
-          echo "=================================================="
-          grep -nE "error:|fatal error|BUILD FAILED|The following build commands failed|undefined symbol|ld: " /tmp/build.log | head -60 || echo "（没匹配到 error: 行）"
-          echo "=================================================="
-          echo "日志最后 30 行"
-          echo "=================================================="
+          echo "================ 报错行 ================"
+          grep -nE "error:|fatal error|BUILD FAILED|undefined symbol|ld: " /tmp/build.log | head -60 || echo "（没匹配到 error: 行）"
+          echo "================ 日志最后 30 行 ================"
           tail -n 30 /tmp/build.log || true
-          n=0
-          grep -E "error:|fatal error" /tmp/build.log | head -8 | while IFS= read -r line; do
-            n=$((n+1))
-            [ "$n" -gt 5 ] && break
-            safe=$(printf '%s' "$line" | sed 's/%/%25/g')
-            echo "::error::编译报错 → $safe"
-          done
           exit $RC
 
-      - name: 7 打包成 ipa（含硬校验）
+      - name: 7 打包成 ipa
         id: pack
         env:
           SRC_ROOT: ${{ steps.locate.outputs.root }}
         run: |
           set -eu
           cd "$SRC_ROOT"
-          APP=$(find build/Build/Products -maxdepth 3 -type d -name "*.app" | head -n 1 || true)
+          APP=$(find build/Build/Products -maxdepth 3 -type d -name "*.app" | head -n1 || true)
           echo "APP = [$APP]"
-          if [ -z "$APP" ]; then
-            echo "::error::没找到 .app"
-            find build -maxdepth 4 -type d | head -n 40 || true
-            exit 1
-          fi
-          APPNAME=$(basename "$APP")            # 形如 LSPakManager.app
+          [ -z "$APP" ] && { echo "::error::没找到 .app"; exit 1; }
+          APPNAME=$(basename "$APP")
           EXEC=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Info.plist" 2>/dev/null || true)
           [ -n "${EXEC:-}" ] || EXEC="${APPNAME%.app}"
-          echo "APPNAME = [$APPNAME]  主程序 = [$EXEC]"
+          VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist" 2>/dev/null || echo "?")
+          echo "APPNAME=[$APPNAME] EXEC=[$EXEC] 版本=[$VER]"
+          if [ "$VER" != "6.6.1" ]; then
+            echo "::error::打出来的包版本是 $VER，不是 6.6.1"
+            exit 1
+          fi
 
           rm -rf Payload LSPakManager-unsigned.ipa
           mkdir -p Payload
           cp -R "$APP" "Payload/$APPNAME"
 
-          echo "---- 二进制架构 ----"
           lipo -info "Payload/$APPNAME/$EXEC" 2>/dev/null || file "Payload/$APPNAME/$EXEC"
 
-          echo "---- 打包（zip 优先，失败自动换 ditto）----"
           if zip -qry LSPakManager-unsigned.ipa Payload; then
             echo "打包方式：zip ✅"
           else
-            echo "zip 不顺利，改用 ditto 再打一次"
             rm -f LSPakManager-unsigned.ipa
             /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload LSPakManager-unsigned.ipa
             echo "打包方式：ditto ✅"
           fi
 
-          echo "---- 打包结果 ----"
           ls -l LSPakManager-unsigned.ipa
           SIZE=$(stat -f%z LSPakManager-unsigned.ipa)
-          echo "ipa 大小 = $SIZE 字节"
-          if [ "$SIZE" -lt 1000000 ]; then
-            echo "::error::ipa 只有 $SIZE 字节，明显不对，打包没成功"
-            exit 1
-          fi
+          [ "$SIZE" -lt 1000000 ] && { echo "::error::ipa 只有 $SIZE 字节，打包没成"; exit 1; }
 
-          echo "---- zip 完整性校验 ----"
-          unzip -t LSPakManager-unsigned.ipa | tail -n 6
+          unzip -t LSPakManager-unsigned.ipa | tail -n 4
 
-          echo "---- 包内清单（前 40 行）----"
-          unzip -l LSPakManager-unsigned.ipa | sed -n '1,40p'
-
-          echo "---- 结构硬校验 ----"
           LISTING=$(unzip -l LSPakManager-unsigned.ipa)
-          printf '%s\n' "$LISTING" | grep -q "Payload/$APPNAME/Info.plist" || { echo "::error::ipa 里找不到 Payload/$APPNAME/Info.plist，结构错"; exit 1; }
-          printf '%s\n' "$LISTING" | grep -q "Payload/$APPNAME/$EXEC"     || { echo "::error::ipa 里找不到主程序二进制 Payload/$APPNAME/$EXEC"; exit 1; }
-          echo "---- 内核库有没有打进去 ----"
-          printf '%s\n' "$LISTING" | grep -q "libxpf.dylib" || { echo "::error::ipa 里没有 libxpf.dylib，内核通道跑不起来"; exit 1; }
+          printf '%s\n' "$LISTING" | grep -q "Payload/$APPNAME/$EXEC" || { echo "::error::ipa 里没有主程序"; exit 1; }
+          printf '%s\n' "$LISTING" | grep -q "libxpf.dylib" || { echo "::error::ipa 里没有 libxpf.dylib"; exit 1; }
           printf '%s\n' "$LISTING" | grep -q "libgrabkernel2.dylib" || { echo "::error::ipa 里没有 libgrabkernel2.dylib"; exit 1; }
-          echo "内核库在包里 ✅"
-          echo "---- 架构确认 ----"
-          lipo -info "Payload/$APPNAME/$EXEC" 2>/dev/null | tee /tmp/arch.txt || true
-          grep -q "arm64e" /tmp/arch.txt || echo "::warning::主程序里没看到 arm64e，装上去可能读不了内核指针"
-          echo "✅ ipa 结构正确：Payload/$APPNAME/ 单层，主程序 + 两个内核库齐全"
+          echo "结构校验通过：主程序 + 两个内核库齐全 ✅"
 
           SHA=$(shasum -a 256 LSPakManager-unsigned.ipa | awk '{print $1}')
           echo "SHA256 = $SHA"
-          printf '%s  LSPakManager-unsigned.ipa\n' "$SHA" > LSPakManager-ipa.sha256
-          {
-            echo "sha=$SHA"
-            echo "size=$SIZE"
-            echo "appname=$APPNAME"
-            echo "exec=$EXEC"
-          } >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "appname=$APPNAME" >> "$GITHUB_OUTPUT"
 
-      - name: 8 上传产物（Artifacts，下载后是 zip，要解压）
+      - name: 8 上传产物（Artifacts）
         uses: actions/upload-artifact@v4
         with:
           name: LSPakManager-ipa
-          path: |
-            ${{ steps.locate.outputs.root }}/LSPakManager-unsigned.ipa
-            ${{ steps.locate.outputs.root }}/LSPakManager-ipa.sha256
+          path: ${{ steps.locate.outputs.root }}/LSPakManager-unsigned.ipa
           retention-days: 30
 
-      - name: 发布成可直接下载的 ipa 链接
+      - name: 9 发成直链
         id: rel
         continue-on-error: true
         uses: softprops/action-gh-release@v2
@@ -460,110 +217,57 @@ jobs:
           name: 最新 ipa（自动构建）
           body: |
             构建号：${{ github.run_number }}
-            提交：${{ github.sha }}
-            应用：${{ steps.pack.outputs.appname }}
+            版本：6.6.1
             大小：${{ steps.pack.outputs.size }} 字节
             SHA256：${{ steps.pack.outputs.sha }}
 
-            这个 ipa 是未签名包，导入全能签/3095 后勾「重签所有框架」再签。
-          files: |
-            ${{ steps.locate.outputs.root }}/LSPakManager-unsigned.ipa
+            未签名包：导入全能签后勾「重签所有框架」，别勾「修改 bundle id」。
+          files: ${{ steps.locate.outputs.root }}/LSPakManager-unsigned.ipa
           overwrite_files: true
           make_latest: true
 
-      - name: 8.9 在运行页上把下载链接写出来
+      - name: 10 运行页写出下载地址
         if: success()
         run: |
           set +e
           URL="https://github.com/${{ github.repository }}/releases/download/ipa-latest/LSPakManager-unsigned.ipa"
-          AURL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           {
-            echo "## ✅ ipa 直链（点开直接下真 ipa，不是 zip）"
+            echo "## ✅ ipa 直链（点开直接下）"
             echo ""
             echo "$URL"
             echo ""
-            echo "- 应用：${{ steps.pack.outputs.appname }}"
+            echo "- 版本：**6.6.1**"
             echo "- 大小：${{ steps.pack.outputs.size }} 字节"
             echo "- SHA256：\`${{ steps.pack.outputs.sha }}\`"
             echo ""
-            echo "## 📦 Artifacts 备用（这个是 zip，必须先解压再拿里面的 ipa）"
+            echo "## 📦 Artifacts 备用（是 zip，要解压）"
             echo ""
-            echo "$AURL"
+            echo "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "ipa 直链 = $URL"
 
-      - name: 10.0 编译失败时把错误原文写回仓库
+      - name: 11 失败时把错误原文写回仓库
         if: failure()
-        env:
-          SRC_ROOT: ${{ steps.locate.outputs.root }}
         run: |
           set +e
-          if [ ! -f /tmp/build.log ]; then
-            {
-              echo "# 这次没跑到编译"
-              echo ""
-              echo "- 时间: $(date -u '+%Y-%m-%d %H:%M UTC')"
-              echo ""
-              echo "在编译开始前就被拦下了，最常见的原因是仓库里的源码版本低于 11.0。"
-              echo "往上翻「3 挑版本最高的源码」那一步，里面有挑中的版本号。"
-              echo "把 LSPakManager-Source-v12.0.zip 原样传到仓库根目录，再点一次 Run workflow。"
-            } > BUILD-ERROR.txt
-            echo "---- BUILD-ERROR.txt ----"
-            cat BUILD-ERROR.txt
-            git config user.name "zaka-build-bot"
-            git config user.email "build-bot@users.noreply.github.com"
-            git add -f BUILD-ERROR.txt
-            git commit -m "记录构建失败原因 [skip ci]" || true
-            git push origin "HEAD:${GITHUB_REF_NAME}" || echo "::warning::写回仓库失败，不影响其它步骤"
-            exit 0
-          fi
           {
-            echo "# 编译错误原文"
+            echo "# 这次构建没成功"
             echo ""
             echo "- 时间: $(date -u '+%Y-%m-%d %H:%M UTC')"
-            echo "- 源码: $SRC_ROOT"
             echo ""
-            echo "## 一、error 行（重点看这里）"
             echo '```'
-            grep -nE "error:|fatal error|BUILD FAILED|The following build commands failed|undefined symbol|ld: |clang: error|swiftc" /tmp/build.log | head -200
-            echo '```'
-            echo ""
-            echo "## 二、日志最后 150 行"
-            echo '```'
-            tail -n 150 /tmp/build.log
+            if [ -f /tmp/build.log ]; then
+              grep -nE "error:|fatal error|BUILD FAILED|undefined symbol|ld: " /tmp/build.log | head -120
+              echo "---- 最后 80 行 ----"
+              tail -n 80 /tmp/build.log
+            else
+              echo "没走到编译这一步，往上翻「3 定位 6.6.1 源码」那一步的输出。"
+            fi
             echo '```'
           } > BUILD-ERROR.txt
-          wc -c BUILD-ERROR.txt
-          echo "---- 摘要 ----"
-          sed -n '1,40p' BUILD-ERROR.txt
-
-          git config user.name "zaka-build-bot"
+          sed -n '1,30p' BUILD-ERROR.txt
+          git config user.name "build-bot"
           git config user.email "build-bot@users.noreply.github.com"
           git add -f BUILD-ERROR.txt
-          if git diff --cached --quiet; then
-            echo "内容没变化，也照样提交一次"
-          fi
           git commit -m "记录编译错误 [skip ci]" || true
-          git push origin "HEAD:${GITHUB_REF_NAME}" || echo "::warning::写回仓库失败（权限或分支保护），不影响其它步骤"
-
-      - name: 10.0 归拢日志（有没有 PakEngine 都不影响）
-        if: failure()
-        run: |
-          set +e
-          mkdir -p /tmp/buildlogs
-          cp /tmp/build.log /tmp/buildlogs/ 2>/dev/null || true
-          if [ -f /tmp/PakEngine.before.swift ]; then
-            cp /tmp/PakEngine.before.swift /tmp/buildlogs/
-          else
-            echo "本版没有改字引擎，没有 PakEngine.before.swift，正常"
-          fi
-          ls -la /tmp/buildlogs
-
-      - name: 10.0 同时上传日志产物
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: /tmp/buildlogs
-          retention-days: 7
-          if-no-files-found: ignore
+          git push origin "HEAD:${GITHUB_REF_NAME}" || echo "::warning::写回仓库失败，不影响别的步骤"
