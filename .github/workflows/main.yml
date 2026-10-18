@@ -24,17 +24,17 @@ jobs:
           echo "---- 仓库根目录 ----"
           ls -la
 
-      - name: 3 定位 6.6.1 源码（只认这一个，绝不编错版本）
+      - name: 3 定位 6.7.2 源码（只认这一个，绝不编错版本）
         id: locate
         run: |
           set -eu
-          WANT="LSPakManager-Source-v6.6.1"
+          WANT="LSPakManager-Source-v6.7.2"
           ROOT=""
 
           # A. 仓库根目录直接就是工程
           if [ -f "project.yml" ] && [ -d "Sources" ]; then
             V=$(grep -o 'CFBundleShortVersionString: *"[0-9.]*"' project.yml | head -n1 | sed 's/.*"\([0-9.]*\)"/\1/')
-            if [ "$V" = "6.6.1" ]; then ROOT="."; fi
+            if [ "$V" = "6.7.2" ]; then ROOT="."; fi
           fi
 
           # B. 已经解开的文件夹
@@ -44,7 +44,7 @@ jobs:
             done
           fi
 
-          # C. 压缩包：一个个试，只认版本号 = 6.6.1 的那个
+          # C. 压缩包：一个个试，只认版本号 = 6.7.2 的那个
           if [ -z "$ROOT" ]; then
             for f in $(find . -maxdepth 2 -type f -name "*.zip" -not -path "./.git/*" 2>/dev/null); do
               [ -z "$ROOT" ] || break
@@ -56,13 +56,13 @@ jobs:
               if [ -n "${P:-}" ]; then
                 VV=$(grep -o 'CFBundleShortVersionString: *"[0-9.]*"' "$P" | head -n1 | sed 's/.*"\([0-9.]*\)"/\1/')
                 echo "   里面的版本 = ${VV:-?}"
-                if [ "$VV" = "6.6.1" ]; then ROOT=$(dirname "$P"); fi
+                if [ "$VV" = "6.7.2" ]; then ROOT=$(dirname "$P"); fi
               fi
             done
           fi
 
           if [ -z "$ROOT" ]; then
-            echo "::error::没找到 6.6.1 的源码。把 LSPakManager-Source-v6.6.1.zip 原样传到仓库根目录，别解压、别改名，再点一次 Run workflow。"
+            echo "::error::没找到 6.7.2 的源码。把 LSPakManager-Source-v6.7.2.zip 原样传到仓库根目录，别解压、别改名，再点一次 Run workflow。"
             ls -la
             exit 1
           fi
@@ -70,8 +70,8 @@ jobs:
           V=$(grep -o 'CFBundleShortVersionString: *"[0-9.]*"' "$ROOT/project.yml" | head -n1 | sed 's/.*"\([0-9.]*\)"/\1/')
           echo "工程目录 = $ROOT"
           echo "版本 = $V"
-          if [ "$V" != "6.6.1" ]; then
-            echo "::error::挑中的源码版本是 $V，不是 6.6.1。请确认传的是 LSPakManager-Source-v6.6.1.zip。"
+          if [ "$V" != "6.7.2" ]; then
+            echo "::error::挑中的源码版本是 $V，不是 6.7.2。请确认传的是 LSPakManager-Source-v6.7.2.zip。"
             exit 1
           fi
 
@@ -85,7 +85,42 @@ jobs:
           grep -q "importedDir().path" "$ROOT/Sources/LSPaths.swift" || { echo "::error::导入源没有包含 App 库（源码是旧的）"; exit 1; }
           grep -q "parkSource" "$ROOT/Sources/AutoIO.swift" || { echo "::error::AutoIO.swift 里没有 parkSource（源码是旧的）"; exit 1; }
           grep -q "已在App库里" "$ROOT/Sources/AutoIO.swift" || { echo "::error::AutoIO.swift 里没有库文件保护（源码是旧的）"; exit 1; }
-          echo "功能自检通过 ✅（App 库 + 库文件保护都在）"
+          grep -q "UIDocumentPickerDelegate" "$ROOT/Sources/DocPicker.swift" || { echo "::error::没找到新文件面板 DocPicker.swift（源码不全）"; exit 1; }
+          grep -q "silentAdopt" "$ROOT/Sources/StoreImport.swift" || { echo "::error::StoreImport.swift 里没有自动对账"; exit 1; }
+          grep -q "askDeleteImports" "$ROOT/Sources/StoreImport.swift" || { echo "::error::StoreImport.swift 里没有一步直删"; exit 1; }
+          grep -q "导入成功" "$ROOT/Sources/Store.swift" || { echo "::error::没有导入成功弹窗"; exit 1; }
+          grep -q "alertNeedsConfirm" "$ROOT/Sources/Store.swift" || { echo "::error::Store.swift 里没有弹窗状态"; exit 1; }
+          if grep -q "adoptParked" "$ROOT/Sources/ContentView.swift"; then echo "::error::ContentView 里还留着「认领」按钮（源码是旧的）"; exit 1; fi
+          if grep -q "fileImporter" "$ROOT/Sources/ContentView.swift"; then echo "::error::ContentView 里还在用 SwiftUI 自带文件面板（源码是旧的）"; exit 1; fi
+          # 墨绿 HUD 外观 + 动态粒子自检
+          [ -f "$ROOT/Sources/Mecha.swift" ] || { echo "::error::缺少 Mecha.swift（外观层没打进包）"; exit 1; }
+          [ -f "$ROOT/Sources/LiveFX.swift" ] || { echo "::error::缺少 LiveFX.swift（粒子特效层没打进包）"; exit 1; }
+          grep -q "TimelineView" "$ROOT/Sources/LiveFX.swift" || { echo "::error::LiveFX.swift 里没有动画驱动"; exit 1; }
+          grep -q "Canvas" "$ROOT/Sources/LiveFX.swift" || { echo "::error::LiveFX.swift 里没有粒子绘制"; exit 1; }
+          grep -q "LiveFX" "$ROOT/Sources/Appearance.swift" || { echo "::error::Appearance.swift 没接上粒子层"; exit 1; }
+          grep -q "KenBurnsImage" "$ROOT/Sources/Appearance.swift" || { echo "::error::自定义背景没有动态效果"; exit 1; }
+          grep -q "MechaHUD" "$ROOT/Sources/Appearance.swift" || { echo "::error::Appearance.swift 里没有 HUD 背景层"; exit 1; }
+          grep -q "墨绿机甲" "$ROOT/Sources/Appearance.swift" || { echo "::error::没有「墨绿机甲」主题（源码是旧的）"; exit 1; }
+          grep -q "② 修复" "$ROOT/Sources/ContentView.swift" || { echo "::error::按钮文字没改成「② 修复」（源码是旧的）"; exit 1; }
+          grep -qF '点一下修复（' "$ROOT/Sources/ContentView.swift" || { echo "::error::② 按钮下面的说明不是「点一下修复（N 个）」（源码是旧的）"; exit 1; }
+          if grep -q "点一下直接修" "$ROOT/Sources/ContentView.swift"; then echo "::error::还留着「点一下直接修」旧文案"; exit 1; fi
+          if grep -q "点一下直接删" "$ROOT/Sources/ContentView.swift"; then echo "::error::还留着「点一下直接删」旧文案"; exit 1; fi
+          grep -q "修复成功" "$ROOT/Sources/StoreImport.swift" || { echo "::error::没有「修复成功」弹窗（源码是旧的）"; exit 1; }
+          if grep -q "删除成功" "$ROOT/Sources/StoreImport.swift"; then echo "::error::还留着「删除成功」字样（源码是旧的）"; exit 1; fi
+          grep -q "Mecha.amber" "$ROOT/Sources/ContentView.swift" || { echo "::error::橙金描边没接上"; exit 1; }
+          grep -q "mechaPanel" "$ROOT/Sources/ContentView.swift" || { echo "::error::ContentView 没换成机甲面板"; exit 1; }
+          grep -q "ChamferedRect" "$ROOT/Sources/ContentView.swift" || { echo "::error::切角装甲没接上"; exit 1; }
+          # 布局退回自检：不许再有多出来的一行 / 字号不许改
+          if grep -q "数据目录" "$ROOT/Sources/ContentView.swift"; then echo "::error::状态卡里多了「数据目录」一行，布局被撑变了（应该和 6.6.3 一模一样的排版）"; exit 1; fi
+          grep -qF 'size: 13, weight: .bold' "$ROOT/Sources/ContentView.swift" || { echo "::error::按钮字号被改过，布局应该和 6.6.3 完全一致"; exit 1; }
+          grep -qF 'minimumScaleFactor(0.65)' "$ROOT/Sources/ContentView.swift" || { echo "::error::按钮缩放参数被改过，布局应该和 6.6.3 完全一致"; exit 1; }
+          grep -qF 'GridItem(.flexible(), spacing: 9)' "$ROOT/Sources/ContentView.swift" || { echo "::error::四宫格排列被改过，布局应该和 6.6.3 完全一致"; exit 1; }
+          ICON="$ROOT/Sources/Assets.xcassets/AppIcon.appiconset/icon_1024.png"
+          [ -f "$ICON" ] || { echo "::error::图标文件不见了"; exit 1; }
+          ISIZE=$(stat -f%z "$ICON")
+          [ "$ISIZE" -gt 100000 ] || { echo "::error::图标文件太小（$ISIZE 字节），可能没换成功"; exit 1; }
+          echo "外观自检通过 ✅（墨绿 HUD + 粒子动态背景 + 新图标 $ISIZE 字节）"
+          echo "功能自检通过 ✅（新文件面板 + 一步直删 + 三个弹窗都在，② 与弹窗文案已改「修复」）"
 
           echo "root=$ROOT" >> "$GITHUB_OUTPUT"
           echo "ver=$V" >> "$GITHUB_OUTPUT"
@@ -164,8 +199,8 @@ jobs:
           [ -n "${EXEC:-}" ] || EXEC="${APPNAME%.app}"
           VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist" 2>/dev/null || echo "?")
           echo "APPNAME=[$APPNAME] EXEC=[$EXEC] 版本=[$VER]"
-          if [ "$VER" != "6.6.1" ]; then
-            echo "::error::打出来的包版本是 $VER，不是 6.6.1"
+          if [ "$VER" != "6.7.2" ]; then
+            echo "::error::打出来的包版本是 $VER，不是 6.7.2"
             exit 1
           fi
 
@@ -217,7 +252,7 @@ jobs:
           name: 最新 ipa（自动构建）
           body: |
             构建号：${{ github.run_number }}
-            版本：6.6.1
+            版本：6.7.2
             大小：${{ steps.pack.outputs.size }} 字节
             SHA256：${{ steps.pack.outputs.sha }}
 
@@ -236,7 +271,7 @@ jobs:
             echo ""
             echo "$URL"
             echo ""
-            echo "- 版本：**6.6.1**"
+            echo "- 版本：**6.7.2**"
             echo "- 大小：${{ steps.pack.outputs.size }} 字节"
             echo "- SHA256：\`${{ steps.pack.outputs.sha }}\`"
             echo ""
@@ -261,7 +296,7 @@ jobs:
               echo "---- 最后 80 行 ----"
               tail -n 80 /tmp/build.log
             else
-              echo "没走到编译这一步，往上翻「3 定位 6.6.1 源码」那一步的输出。"
+              echo "没走到编译这一步，往上翻「3 定位 6.7.2 源码」那一步的输出。"
             fi
             echo '```'
           } > BUILD-ERROR.txt
