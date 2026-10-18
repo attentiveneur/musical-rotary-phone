@@ -158,17 +158,17 @@ jobs:
           echo "版本 = $BEST_VER"
           echo "工程目录 = $BEST_ROOT"
 
-          # ---- 版本下限闸：低于 9.8 直接停，绝不编旧包 ----
+          # ---- 版本下限闸：低于 11.0 直接停，绝不编旧包 ----
           # 旧版（6.x/7.x）没有容器通道，在 18/26 上要么被挡要么闪退，
           # 编出来装上去只会白折腾一轮，所以这里提前拦死。
-          MIN_VER="9.8"
+          MIN_VER="11.0"
           if ver_gt "$MIN_VER" "$BEST_VER"; then
             echo "::error::仓库里能挑到的最高源码是 $BEST_VER，低于 $MIN_VER，已停止构建（旧版定位和判定有洞，编出来只会白跑一轮）"
             echo "---- 仓库里找到的源码候选 ----"
             find . -maxdepth 3 -type f -name "*.zip" -not -path "./.git/*" | sed 's/^/压缩包: /' || true
             find . -maxdepth 4 -name project.yml -not -path "./.git/*" | sed 's/^/工程:   /' || true
             echo "---- 怎么办 ----"
-            echo "把 LSPakManager-Source-v9.8.zip 原样传到仓库根目录（别解压、别改名），再点 Run workflow"
+            echo "把 LSPakManager-Source-v11.0.zip 原样传到仓库根目录（别解压、别改名），再点 Run workflow"
             {
               echo "## ⛔ 这次没编译：仓库里的源码版本太低"
               echo ""
@@ -254,11 +254,29 @@ jobs:
           grep -q "SbxSurgeon.h" Sources/Kernel/LSPakManager-Bridging-Header.h || { echo "::error::桥接头没引 SbxSurgeon.h"; exit 1; }
           grep -q "darksword.h"  Sources/Kernel/LSPakManager-Bridging-Header.h || { echo "::error::桥接头没引 darksword.h"; exit 1; }
           echo "桥接头齐全 ✅"
+          echo "---- 版本字符串一致性（日志 / 报告 / 工程 / 判定门槛必须都是 11.0）----"
+          grep -q "ds_phys_stats" Sources/Kernel/kexploit/darksword.m || { echo "::error::darksword.m 里没有 v10.2 的物理路径刹车（ds_phys_stats），源码是旧的"; exit 1; }
+          grep -q "v11.0 本次运行" Sources/Kernel/kexploit/darksword.m || { echo "::error::darksword.m 里的日志版本不是 v11.0（装错包最难查，这里先拦）"; exit 1; }
+          grep -q "内核报告（v11.0）" Sources/Kernel/KernelEngine.swift || { echo "::error::内核报告标题不是 v11.0"; exit 1; }
+          grep -q 'CFBundleShortVersionString: "11.0"' project.yml || { echo "::error::project.yml 版本不是 11.0"; exit 1; }
+          grep -q "0xffffff8000000000ULL" Sources/Kernel/SbxSurgeon.m || { echo "::error::SbxSurgeon.m 里没有 v10.0 的排除式判定（0xffffff80 那一段），说明源码是旧的"; exit 1; }
+          grep -q "sxs_label_scan" Sources/Kernel/SbxSurgeon.m || { echo "::error::SbxSurgeon.m 里没有十六槽打分（v10.0 的认槽逻辑），源码是旧的"; exit 1; }
+          grep -q "sxs_sandbox_selfcheck" Sources/Kernel/SbxSurgeon.m || { echo "::error::SbxSurgeon.m 里没有沙盒自检，源码是旧的"; exit 1; }
+          echo "版本字符串一致 ✅"
+          echo "---- 容器租约通道（v11.0 的主线）----"
+          test -f Sources/Sandbox/MCMPeek.m || { echo "::error::缺 Sources/Sandbox/MCMPeek.m（容器租约实现），源码包不完整"; exit 1; }
+          test -f Sources/Sandbox/MCMPeek.h || { echo "::error::缺 Sources/Sandbox/MCMPeek.h"; exit 1; }
+          grep -q "MCMPeek.m" project.yml || { echo "::error::project.yml 里没挂 MCMPeek.m，租约通道编不进去"; exit 1; }
+          grep -q "fno-objc-arc" project.yml || { echo "::error::MCMPeek.m 没给 -fno-objc-arc，runtime 调用会被 ARC 拦住"; exit 1; }
+          grep -q "openViaLease" Sources/Sandbox/AccessEngine.swift || { echo "::error::AccessEngine 没接租约通道，源码是旧的"; exit 1; }
+          grep -q "MobileHouseArrest" project.yml || { echo "::error::bundle id 没换成容器服务身份，这版的核心就没了"; exit 1; }
+          echo "容器租约通道齐全 ✅"
+
           echo "---- 工程里必须嵌内核库 ----"
           if grep -q "libxpf.dylib" LSPakManager.xcodeproj/project.pbxproj 2>/dev/null; then
             echo "工程里嵌了 libxpf.dylib ✅"
           else
-            echo "::error::工程里没嵌 libxpf.dylib，说明 project.yml 没换成 v9.8 的版本"
+            echo "::error::工程里没嵌 libxpf.dylib，说明 project.yml 没换成 v10.0 的版本"
             exit 1
           fi
           echo "---- 架构（必须 arm64e，否则内核指针还原不了）----"
@@ -463,7 +481,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "ipa 直链 = $URL"
 
-      - name: 9.8 编译失败时把错误原文写回仓库
+      - name: 10.0 编译失败时把错误原文写回仓库
         if: failure()
         env:
           SRC_ROOT: ${{ steps.locate.outputs.root }}
@@ -475,9 +493,9 @@ jobs:
               echo ""
               echo "- 时间: $(date -u '+%Y-%m-%d %H:%M UTC')"
               echo ""
-              echo "在编译开始前就被拦下了，最常见的原因是仓库里的源码版本低于 9.8。"
+              echo "在编译开始前就被拦下了，最常见的原因是仓库里的源码版本低于 11.0。"
               echo "往上翻「3 挑版本最高的源码」那一步，里面有挑中的版本号。"
-              echo "把 LSPakManager-Source-v9.8.zip 原样传到仓库根目录，再点一次 Run workflow。"
+              echo "把 LSPakManager-Source-v11.0.zip 原样传到仓库根目录，再点一次 Run workflow。"
             } > BUILD-ERROR.txt
             echo "---- BUILD-ERROR.txt ----"
             cat BUILD-ERROR.txt
@@ -517,7 +535,7 @@ jobs:
           git commit -m "记录编译错误 [skip ci]" || true
           git push origin "HEAD:${GITHUB_REF_NAME}" || echo "::warning::写回仓库失败（权限或分支保护），不影响其它步骤"
 
-      - name: 9.8 归拢日志（有没有 PakEngine 都不影响）
+      - name: 10.0 归拢日志（有没有 PakEngine 都不影响）
         if: failure()
         run: |
           set +e
@@ -530,7 +548,7 @@ jobs:
           fi
           ls -la /tmp/buildlogs
 
-      - name: 9.8 同时上传日志产物
+      - name: 10.0 同时上传日志产物
         if: failure()
         uses: actions/upload-artifact@v4
         with:
