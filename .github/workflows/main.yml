@@ -21,10 +21,8 @@ jobs:
           set -e
           sw_vers
           xcodebuild -version
-          echo "---- 仓库根目录 ----"
+          echo "---- 仓库内容 ----"
           ls -la
-          echo "---- 仓库里的 zip ----"
-          ls -la *.zip 2>/dev/null || echo "（根目录没有 zip）"
 
       - name: 3 找 v15 源码
         id: locate
@@ -35,43 +33,24 @@ jobs:
 
           BEST=""
 
-          # A. 已经解开的文件夹（15.x 任意小版本，按版本从高到低挑）
-          DIRS=$(ls -1d LSPakManager-Source-v15*/ 2>/dev/null | sed 's:/$::' | sort -rV || true)
-          for d in $DIRS . ; do
-            if [ -f "$d/project.yml" ] && [ -d "$d/Sources" ]; then
-              if grep -q 'CFBundleShortVersionString: "15\.' "$d/project.yml"; then
-                BEST="$d"
-                echo "命中文件夹：$d"
-                break
-              fi
-            fi
-          done
-
-          # B. 压缩包
+          # A. 压缩包，按版本从高到低挑 —— 优先于文件夹，免得旧文件夹抢戏
           if [ -z "$BEST" ]; then
             ZIPS=$(ls -1 *.zip 2>/dev/null | grep -iE 'v15\.[0-9]+' | sort -rV || true)
             for z in $ZIPS; do
               [ -f "$z" ] || continue
               echo "---- 试探压缩包：$z ----"
-              rm -rf _v15src
-              mkdir -p _v15src
+              rm -rf _v15src && mkdir -p _v15src
               if python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$z" _v15src 2>/dev/null; then
-                echo "解压方式：python zipfile"
+                echo "解压方式：python zipfile ✅"
               else
                 unzip -oq "$z" -d _v15src || { echo "跳过（不是有效压缩包）"; rm -rf _v15src; continue; }
-                echo "解压方式：unzip"
+                echo "解压方式：unzip ✅"
               fi
               P=$(find _v15src -maxdepth 5 -name project.yml | head -n 1 || true)
-              if [ -z "${P:-}" ]; then
-                echo "跳过（里面没有工程）"
-                rm -rf _v15src
-                continue
-              fi
+              [ -z "${P:-}" ] && { echo "跳过（里面没有工程）"; rm -rf _v15src; continue; }
               D=$(dirname "$P")
               if grep -q 'CFBundleShortVersionString: "15\.' "$D/project.yml"; then
-                BEST="$D"
-                echo "命中压缩包：$z → $D"
-                break
+                BEST="$D"; echo "命中压缩包：$z → $D"; break
               else
                 echo "跳过（版本不是 15.x）"
                 rm -rf _v15src
@@ -79,13 +58,26 @@ jobs:
             done
           fi
 
+          # B. 已经解开的文件夹（只在没有更高版本压缩包时才用）
+          if [ -z "$BEST" ]; then
+            DIRS=$(ls -1d LSPakManager-Source-v15*/ 2>/dev/null | sed 's:/$::' | sort -rV || true)
+            for d in $DIRS . ; do
+              if [ -f "$d/project.yml" ] && [ -d "$d/Sources" ]; then
+                if grep -q 'CFBundleShortVersionString: "15\.' "$d/project.yml"; then
+                  BEST="$d"; echo "命中文件夹：$d"; break
+                fi
+              fi
+            done
+          fi
+
           if [ -z "$BEST" ]; then
             echo "::error::仓库里没找到 v15 源码"
+            echo "---- 仓库里的 zip ----"
             ls -la *.zip 2>/dev/null || true
             {
-              echo "## 没找到 v15 源码"
+              echo "## ⛔ 没找到 v15 源码"
               echo ""
-              echo "把 LSPakManager-Source-v15.2.zip 原样传到仓库根目录（别解压、别改名），再点 Run workflow。"
+              echo "把 \`LSPakManager-Source-v15.3.zip\` 原样传到仓库根目录（别解压、别改名），再点 Run workflow。仓库里有多个 v15 包时，自动挑版本最高的那个。"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
@@ -96,37 +88,32 @@ jobs:
           ls -la "$BEST/Sources"
           echo "======================================"
           echo "root=$BEST" >> "$GITHUB_OUTPUT"
-
-          VER=$(grep -o 'CFBundleShortVersionString: "15\.[0-9]*"' "$BEST/project.yml" | head -1 | sed 's/.*"\(15\.[0-9]*\)"/\1/' || echo "15.x")
-          echo "选中版本 = $VER"
           {
-            echo "## 本次源码"
+            echo "## 🔎 本次源码"
             echo ""
-            echo "- 版本：**$VER**"
+            echo "- 版本：**15.3**"
             echo "- 目录：\`$BEST\`"
             echo ""
-            echo "下面出现「ipa 直链」才说明编译成功。"
+            echo "下面出现「✅ ipa 直链」才说明编译成功。"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 4 准备 XcodeGen
         run: |
           set -eu
           if command -v xcodegen >/dev/null 2>&1; then
-            echo "系统自带 xcodegen"
+            echo "系统自带: $(xcodegen --version)"
             exit 0
           fi
           mkdir -p "$HOME/xg"
           curl -L --fail --retry 3 -o /tmp/xg.zip https://github.com/yonaskolb/XcodeGen/releases/latest/download/xcodegen.zip
           unzip -q -o /tmp/xg.zip -d "$HOME/xg"
           BIN=$(find "$HOME/xg" -type f -name xcodegen -perm -u+x | head -n 1 || true)
-          if [ -z "$BIN" ]; then
-            BIN=$(find "$HOME/xg" -type f -name xcodegen | head -n 1 || true)
-          fi
+          [ -z "$BIN" ] && BIN=$(find "$HOME/xg" -type f -name xcodegen | head -n 1 || true)
           chmod +x "$BIN"
           echo "$(dirname "$BIN")" >> "$GITHUB_PATH"
-          echo "装好了 xcodegen"
+          echo "装好了: $("$BIN" --version)"
 
-      - name: 5 源码自检与老包补丁
+      - name: 5 生成工程 + 源码自检
         env:
           SRC_ROOT: ${{ steps.locate.outputs.root }}
         run: |
@@ -137,147 +124,56 @@ jobs:
           for f in Sources/LSApp.swift Sources/ContentView.swift Sources/Store.swift \
                    Sources/FilzaBridge.swift Sources/LSPaths.swift Sources/Models.swift \
                    Sources/DirPicker.swift Sources/Appearance.swift Sources/Compatibility.swift ; do
-            if [ ! -f "$f" ]; then
-              echo "::error::缺 $f，源码包不完整"
-              exit 1
-            fi
+            [ -f "$f" ] || { echo "::error::缺 $f，源码包不完整"; exit 1; }
           done
-          echo "文件齐"
-
-          echo "---- 如果传的是旧包，就地打补丁（编译器认的写法） ----"
-          sed 's/^          //' > /tmp/repair.py <<'REPAIR_EOF'
-          import re, pathlib, sys
-
-          changed = []
-
-          fb = pathlib.Path("Sources/FilzaBridge.swift")
-          if not fb.exists():
-              sys.exit("找不到 Sources/FilzaBridge.swift")
-          s = fb.read_text(encoding="utf-8")
-          orig = s
-
-          marker = "final class FilzaBridge {"
-          if "struct BridgeFailure: Error" not in s:
-              if marker not in s:
-                  sys.exit("补丁失败：找不到 final class FilzaBridge")
-              helper = (
-                  "struct BridgeFailure: Error {\n"
-                  "    let message: String\n"
-                  "    init(_ message: String) { self.message = message }\n"
-                  "}\n\n"
-              )
-              s = s.replace(marker, helper + marker, 1)
-              changed.append("补 BridgeFailure")
-
-          if "Result<GameLocation, String>" in s:
-              s = s.replace("Result<GameLocation, String>", "Result<GameLocation, BridgeFailure>")
-              changed.append("Result 失败类型改 BridgeFailure")
-
-          before = s
-          s = re.sub(r'\.failure\(\s*("[^"\n]*")\s*\)', lambda m: '.failure(BridgeFailure(' + m.group(1) + '))', s)
-          if s != before:
-              changed.append("failure 包一层 BridgeFailure")
-
-          if "waitsForConnectivity" in s:
-              s2 = re.sub(r'^[ \t]*cfg\.waitsForConnectivity[^\n]*\n', '', s, flags=re.M)
-              if s2 == s:
-                  sys.exit("补丁失败：waitsForConnectivity 这一段没删掉")
-              s = s2
-              changed.append("删掉 waitsForConnectivity 赋值")
-
-          if re.search(r'Set\(\s*commonPorts\s*\+', s):
-              s = re.sub(r'Set\(\s*commonPorts\s*\+', 'Set(Self.commonPorts +', s)
-              changed.append("commonPorts 加 Self.")
-
-          if s != orig:
-              fb.write_text(s, encoding="utf-8")
-
-          st = pathlib.Path("Sources/Store.swift")
-          if st.exists():
-              t = st.read_text(encoding="utf-8")
-              t2 = t.replace(r'\(why)', r'\(why.message)')
-              if t2 != t:
-                  st.write_text(t2, encoding="utf-8")
-                  changed.append("Store 里 why 改成 why.message")
-
-          print("补丁动作：" + ("、".join(changed) if changed else "无需改动（源码已经是修好的版本）"))
-
-          s = fb.read_text(encoding="utf-8")
-          if "struct BridgeFailure: Error" not in s:
-              sys.exit("补丁后自检失败：缺 BridgeFailure")
-          if "Self.commonPorts" not in s:
-              sys.exit("补丁后自检失败：静态成员没加 Self.")
-          if "waitsForConnectivity" in s:
-              sys.exit("补丁后自检失败：waitsForConnectivity 还在")
-          if "Result<GameLocation, String>" in s:
-              sys.exit("补丁后自检失败：Result 失败类型还是 String")
-          print("补丁后自检通过")
-          REPAIR_EOF
-          python3 /tmp/repair.py
-
-          echo "---- 源码是不是已经修好的版本 ----"
-          grep -q "struct BridgeFailure: Error" Sources/FilzaBridge.swift || { echo "::error::BridgeFailure 没打上"; exit 1; }
-          grep -q "Self.commonPorts" Sources/FilzaBridge.swift || { echo "::error::commonPorts 还是旧写法"; exit 1; }
-          if grep -q "waitsForConnectivity" Sources/FilzaBridge.swift; then
-            echo "::error::还有只读属性赋值没清掉"
-            exit 1
-          fi
-          if grep -q "Result<GameLocation, String>" Sources/FilzaBridge.swift; then
-            echo "::error::Result 失败类型还是 String"
-            exit 1
-          fi
-          echo "编译修复到位"
+          echo "文件齐 ✅"
 
           echo "---- 桥接层：必须真的走 http 桥 ----"
-          for k in PROPFIND "func upload" "func download" "func move" "func ensureDir" "Containers/Data/Application" "ShadowTrackerExtra" ; do
-            grep -q "$k" Sources/FilzaBridge.swift || { echo "::error::FilzaBridge 里缺 $k"; exit 1; }
-          done
-          echo "http 桥齐全"
+          grep -q "PROPFIND" Sources/FilzaBridge.swift || { echo "::error::FilzaBridge 里没有 WebDAV 列目录"; exit 1; }
+          grep -q "func upload" Sources/FilzaBridge.swift || { echo "::error::FilzaBridge 里没有上传"; exit 1; }
+          grep -q "func download" Sources/FilzaBridge.swift || { echo "::error::FilzaBridge 里没有下载"; exit 1; }
+          grep -q "func move" Sources/FilzaBridge.swift || { echo "::error::FilzaBridge 里没有移动"; exit 1; }
+          grep -q "func ensureDir" Sources/FilzaBridge.swift || { echo "::error::FilzaBridge 里没有建目录"; exit 1; }
+          grep -q "Containers/Data/Application" Sources/FilzaBridge.swift || { echo "::error::没有扫 App 容器；找不到游戏目录"; exit 1; }
+          grep -q "ShadowTrackerExtra" Sources/FilzaBridge.swift || { echo "::error::认游戏目录的特征串丢了"; exit 1; }
+          echo "http 桥 ✅"
 
-          echo "---- 一个中转站：进和出必须是同一个目录 ----"
-          for k in "func scanTransit" "func exportAll" "func pull" "startPilot" "transitPath" ; do
-            grep -q "$k" Sources/Store.swift || { echo "::error::Store 里缺 $k"; exit 1; }
-          done
-          grep -q "store.exportAll()" Sources/ContentView.swift || { echo "::error::界面没接 exportAll()"; exit 1; }
-          grep -q "全部移出" Sources/ContentView.swift || { echo "::error::界面没有「全部移出」"; exit 1; }
+          echo "---- 一个中转站：手动导入 / 手动移出 ----"
+          grep -q "func importAll" Sources/Store.swift || { echo "::error::没有「导入文件」的 importAll"; exit 1; }
+          grep -q "func overwriteInto" Sources/Store.swift || { echo "::error::没有覆盖写入的 overwriteInto"; exit 1; }
+          grep -q "func exportImported" Sources/Store.swift || { echo "::error::没有「移出导入的文件」的 exportImported"; exit 1; }
+          grep -q "func pull" Sources/Store.swift || { echo "::error::没有把包搬回中转站的 pull"; exit 1; }
+          grep -q "transitPath" Sources/Store.swift || { echo "::error::没有中转站路径"; exit 1; }
+          if grep -q "startPilot\|func scanTransit\|autoPullAfter" Sources/Store.swift; then echo "::error::自动巡逻还在（拿到的是旧包）"; exit 1; fi
+          grep -q "store.importAll()" Sources/ContentView.swift || { echo "::error::界面「导入文件」没接 importAll()（拿到的是旧包）"; exit 1; }
+          grep -q "导入文件" Sources/ContentView.swift || { echo "::error::界面没有「导入文件」按钮（拿到的是旧包）"; exit 1; }
+          grep -q "store.exportImported()" Sources/ContentView.swift || { echo "::error::界面「移出导入的文件」没接 exportImported()（拿到的是旧包）"; exit 1; }
+          grep -q "移出导入的文件" Sources/ContentView.swift || { echo "::error::界面没有「移出导入的文件」（拿到的是旧包）"; exit 1; }
+          if grep -q "store.autoOn" Sources/ContentView.swift; then echo "::error::自动搬运开关还在（拿到的是旧包）"; exit 1; fi
           grep -q "中转站" Sources/ContentView.swift || { echo "::error::界面没有中转站那一块"; exit 1; }
           grep -q "DirPicker" Sources/ContentView.swift || { echo "::error::没有文件夹选择器"; exit 1; }
           grep -q "struct DirPicker" Sources/DirPicker.swift || { echo "::error::DirPicker.swift 里没有选择器"; exit 1; }
-          echo "中转站与自动巡逻到位"
+          echo "中转站 + 手动导入 / 手动移出 ✅"
 
-          echo "---- 这版不许再出现改包与内核 ----"
-          if [ -f Sources/PakEngine.swift ]; then
-            echo "::error::v15 不该包含 PakEngine.swift（改字引擎）"
-            exit 1
-          fi
-          if [ -d Sources/Kernel ]; then
-            echo "::error::v15 不该包含 Sources/Kernel（内核）"
-            exit 1
-          fi
-          echo "干净"
+          echo "---- 这版不许再出现改包 / 内核 ----"
+          if [ -f Sources/PakEngine.swift ]; then echo "::error::v15 不该包含 PakEngine.swift（改字引擎）"; exit 1; fi
+          if [ -d Sources/Kernel ]; then echo "::error::v15 不该包含 Sources/Kernel（内核）"; exit 1; fi
+          echo "干净 ✅"
 
           echo "---- 包标识必须是 v15 自己的 ----"
-          if ! grep -q "com.langshen.zakamove15" project.yml; then
-            echo "::error::包标识不是 v15 的，会和旧版打架"
-            exit 1
-          fi
-          echo "标识正确"
+          grep -q "com.langshen.zakamove15" project.yml || { echo "::error::包标识不是 v15 的，会和旧版打架"; exit 1; }
+          echo "标识 ✅"
 
           echo "---- 明文 http 必须放行 ----"
-          if ! grep -q "NSAllowsArbitraryLoads" project.yml; then
-            echo "::error::没放行明文 http，连不上本机服务"
-            exit 1
-          fi
-          if ! grep -q "NSLocalNetworkUsageDescription" project.yml; then
-            echo "::error::没写本地网络用途说明"
-            exit 1
-          fi
-          echo "网络权限配好"
+          grep -q "NSAllowsArbitraryLoads" project.yml || { echo "::error::没放行明文 http，连不上本机服务"; exit 1; }
+          grep -q "NSLocalNetworkUsageDescription" project.yml || { echo "::error::没写本地网络用途说明"; exit 1; }
 
-          echo "---- Swift 语法粗检（硬错误提前暴露） ----"
-          for f in Sources/*.swift ; do
-            echo "检查 $f"
-          done
+          echo "---- 必须是修过编译错误的源码 ----"
+          grep -q "struct BridgeFailure: Error" Sources/FilzaBridge.swift || { echo "::error::这是修复前的旧源码（Result 失败类型没改）。换成 v15.3 的 zip 再跑"; exit 1; }
+          grep -q "Self.commonPorts" Sources/FilzaBridge.swift || { echo "::error::这是修复前的旧源码（静态成员用法没改）。换成 v15.3 的 zip 再跑"; exit 1; }
+          if grep -q "waitsForConnectivity = false" Sources/FilzaBridge.swift; then echo "::error::这是修复前的旧源码（给只读属性赋值）。换成 v15.3 的 zip 再跑"; exit 1; fi
+          echo "编译修复 ✅"
+          echo "网络权限 ✅"
 
           xcodegen generate
           ls -la
@@ -304,9 +200,9 @@ jobs:
           RC=$?
           echo "xcodebuild 退出码 = $RC"
           echo "=================================================="
-          echo "真正的报错（error 开头的行）"
+          echo "真正的报错（error: 开头的行）"
           echo "=================================================="
-          grep -nE "error:|fatal error|BUILD FAILED|The following build commands failed|undefined symbol|ld: " /tmp/build.log | head -60 || echo "（没匹配到 error 行）"
+          grep -nE "error:|fatal error|BUILD FAILED|The following build commands failed|undefined symbol|ld: " /tmp/build.log | head -60 || echo "（没匹配到 error: 行）"
           echo "=================================================="
           echo "日志最后 40 行"
           echo "=================================================="
@@ -314,21 +210,19 @@ jobs:
           if [ "$RC" -ne 0 ]; then
             {
               echo ""
-              echo "## 编译失败，原文在这"
+              echo "## ❌ 编译失败，原文在这（版本 15.1）"
               echo ""
               echo "下面是编译器原话，带文件名和行号，直接截这一块发过来就行。"
               echo ""
-              printf '%s\n' '```'
+              echo '```'
               grep -nE "error:|fatal error" /tmp/build.log | head -30
-              printf '%s\n' '```'
+              echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
           n=0
           grep -E "error:|fatal error" /tmp/build.log | head -8 | while IFS= read -r line; do
             n=$((n+1))
-            if [ "$n" -gt 5 ]; then
-              break
-            fi
+            [ "$n" -gt 5 ] && break
             safe=$(printf '%s' "$line" | sed 's/%/%25/g')
             echo "::error::编译报错 → $safe"
           done
@@ -350,9 +244,7 @@ jobs:
           fi
           APPNAME=$(basename "$APP")
           EXEC=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Info.plist" 2>/dev/null || true)
-          if [ -z "${EXEC:-}" ]; then
-            EXEC="${APPNAME%.app}"
-          fi
+          [ -n "${EXEC:-}" ] || EXEC="${APPNAME%.app}"
           echo "APPNAME = [$APPNAME]  主程序 = [$EXEC]"
 
           rm -rf Payload LSPakManager-unsigned.ipa
@@ -361,11 +253,11 @@ jobs:
           lipo -info "Payload/$APPNAME/$EXEC" 2>/dev/null || file "Payload/$APPNAME/$EXEC"
 
           if zip -qry LSPakManager-unsigned.ipa Payload; then
-            echo "打包方式：zip"
+            echo "打包方式：zip ✅"
           else
             rm -f LSPakManager-unsigned.ipa
             /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload LSPakManager-unsigned.ipa
-            echo "打包方式：ditto"
+            echo "打包方式：ditto ✅"
           fi
 
           ls -l LSPakManager-unsigned.ipa
@@ -379,7 +271,7 @@ jobs:
           LISTING=$(unzip -l LSPakManager-unsigned.ipa)
           printf '%s\n' "$LISTING" | grep -q "Payload/$APPNAME/Info.plist" || { echo "::error::结构错：没有 Info.plist"; exit 1; }
           printf '%s\n' "$LISTING" | grep -q "Payload/$APPNAME/$EXEC"     || { echo "::error::结构错：没有主程序"; exit 1; }
-          echo "ipa 结构正确"
+          echo "✅ ipa 结构正确"
 
           SHA=$(shasum -a 256 LSPakManager-unsigned.ipa | awk '{print $1}')
           printf '%s  LSPakManager-unsigned.ipa\n' "$SHA" > LSPakManager-ipa.sha256
@@ -399,7 +291,8 @@ jobs:
             ${{ steps.locate.outputs.root }}/LSPakManager-ipa.sha256
           retention-days: 30
 
-      - name: 9 发布成可直接下载的 ipa 链接
+      - name: 发布成可直接下载的 ipa 链接
+        id: rel
         continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
@@ -407,57 +300,57 @@ jobs:
           name: 最新 ipa（自动构建）
           body: |
             构建号：${{ github.run_number }}
-            版本：15.2（一个中转站，自动进出）
+            版本：15.1（一个中转站，自动进出 · 修掉三处编译错误）
             SHA256：${{ steps.pack.outputs.sha }}
 
-            未签名包，导入全能签后勾「重签所有框架」再签。
+            未签名包，导入全能签/3095 后勾「重签所有框架」再签。
           files: |
             ${{ steps.locate.outputs.root }}/LSPakManager-unsigned.ipa
           overwrite_files: true
           make_latest: true
 
-      - name: 10 运行页写出直链
+      - name: 9 运行页写出直链
         if: success()
         run: |
           set +e
           URL="https://github.com/${{ github.repository }}/releases/download/ipa-latest/LSPakManager-unsigned.ipa"
           AURL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           {
-            echo "## ipa 直链（点开直接下真 ipa）"
+            echo "## ✅ ipa 直链（点开直接下真 ipa）"
             echo ""
             echo "$URL"
             echo ""
-            echo "- 版本：15.2"
+            echo "- 版本：15.1"
             echo "- 大小：${{ steps.pack.outputs.size }} 字节"
-            echo "- SHA256：${{ steps.pack.outputs.sha }}"
+            echo "- SHA256：\`${{ steps.pack.outputs.sha }}\`"
             echo ""
-            echo "## Artifacts 备用（这个是 zip，要先解压）"
+            echo "## 📦 Artifacts 备用（这个是 zip，要先解压）"
             echo ""
             echo "$AURL"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "ipa 直链 = $URL"
 
-      - name: 11 失败时把错误原文写回仓库
+      - name: 10 失败时把错误原文写回仓库
         if: failure()
         env:
           SRC_ROOT: ${{ steps.locate.outputs.root }}
         run: |
           set +e
           {
-            echo "# 编译错误原文（v15.2）"
+            echo "# 编译错误原文（v15.1）"
             echo ""
             echo "- 时间: $(date -u '+%Y-%m-%d %H:%M UTC')"
             echo ""
             if [ -f /tmp/build.log ]; then
               echo "## 一、error 行"
-              printf '%s\n' '```'
+              echo '```'
               grep -nE "error:|fatal error|BUILD FAILED|The following build commands failed|undefined symbol|ld: |clang: error" /tmp/build.log | head -200
-              printf '%s\n' '```'
+              echo '```'
               echo ""
               echo "## 二、日志最后 150 行"
-              printf '%s\n' '```'
+              echo '```'
               tail -n 150 /tmp/build.log
-              printf '%s\n' '```'
+              echo '```'
             else
               echo "没跑到编译就停了（多半是没找到 v15 源码）。"
             fi
