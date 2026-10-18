@@ -161,14 +161,14 @@ jobs:
           # ---- 版本下限闸：低于 11.0 直接停，绝不编旧包 ----
           # 旧版（6.x/7.x）没有容器通道，在 18/26 上要么被挡要么闪退，
           # 编出来装上去只会白折腾一轮，所以这里提前拦死。
-          MIN_VER="11.0"
+          MIN_VER="12.0"
           if ver_gt "$MIN_VER" "$BEST_VER"; then
             echo "::error::仓库里能挑到的最高源码是 $BEST_VER，低于 $MIN_VER，已停止构建（旧版定位和判定有洞，编出来只会白跑一轮）"
             echo "---- 仓库里找到的源码候选 ----"
             find . -maxdepth 3 -type f -name "*.zip" -not -path "./.git/*" | sed 's/^/压缩包: /' || true
             find . -maxdepth 4 -name project.yml -not -path "./.git/*" | sed 's/^/工程:   /' || true
             echo "---- 怎么办 ----"
-            echo "把 LSPakManager-Source-v11.0.zip 原样传到仓库根目录（别解压、别改名），再点 Run workflow"
+            echo "把 LSPakManager-Source-v12.0.zip 原样传到仓库根目录（别解压、别改名），再点 Run workflow"
             {
               echo "## ⛔ 这次没编译：仓库里的源码版本太低"
               echo ""
@@ -254,11 +254,11 @@ jobs:
           grep -q "SbxSurgeon.h" Sources/Kernel/LSPakManager-Bridging-Header.h || { echo "::error::桥接头没引 SbxSurgeon.h"; exit 1; }
           grep -q "darksword.h"  Sources/Kernel/LSPakManager-Bridging-Header.h || { echo "::error::桥接头没引 darksword.h"; exit 1; }
           echo "桥接头齐全 ✅"
-          echo "---- 版本字符串一致性（日志 / 报告 / 工程 / 判定门槛必须都是 11.0）----"
+          echo "---- 版本字符串一致性（日志 / 报告 / 工程 / 判定门槛必须都是 11.1）----"
           grep -q "ds_phys_stats" Sources/Kernel/kexploit/darksword.m || { echo "::error::darksword.m 里没有 v10.2 的物理路径刹车（ds_phys_stats），源码是旧的"; exit 1; }
-          grep -q "v11.0 本次运行" Sources/Kernel/kexploit/darksword.m || { echo "::error::darksword.m 里的日志版本不是 v11.0（装错包最难查，这里先拦）"; exit 1; }
-          grep -q "内核报告（v11.0）" Sources/Kernel/KernelEngine.swift || { echo "::error::内核报告标题不是 v11.0"; exit 1; }
-          grep -q 'CFBundleShortVersionString: "11.0"' project.yml || { echo "::error::project.yml 版本不是 11.0"; exit 1; }
+          grep -q "v12.0 本次运行" Sources/Kernel/kexploit/darksword.m || { echo "::error::darksword.m 里的日志版本不是 v11.1（装错包最难查，这里先拦）"; exit 1; }
+          grep -q "内核报告（v12.0）" Sources/Kernel/KernelEngine.swift || { echo "::error::内核报告标题不是 v12.0"; exit 1; }
+          grep -q 'CFBundleShortVersionString: "12.0"' project.yml || { echo "::error::project.yml 版本不是 12.0"; exit 1; }
           grep -q "0xffffff8000000000ULL" Sources/Kernel/SbxSurgeon.m || { echo "::error::SbxSurgeon.m 里没有 v10.0 的排除式判定（0xffffff80 那一段），说明源码是旧的"; exit 1; }
           grep -q "sxs_label_scan" Sources/Kernel/SbxSurgeon.m || { echo "::error::SbxSurgeon.m 里没有十六槽打分（v10.0 的认槽逻辑），源码是旧的"; exit 1; }
           grep -q "sxs_sandbox_selfcheck" Sources/Kernel/SbxSurgeon.m || { echo "::error::SbxSurgeon.m 里没有沙盒自检，源码是旧的"; exit 1; }
@@ -271,6 +271,17 @@ jobs:
           grep -q "openViaLease" Sources/Sandbox/AccessEngine.swift || { echo "::error::AccessEngine 没接租约通道，源码是旧的"; exit 1; }
           grep -q "MobileHouseArrest" project.yml || { echo "::error::bundle id 没换成容器服务身份，这版的核心就没了"; exit 1; }
           echo "容器租约通道齐全 ✅"
+
+          echo "---- 门诊接线（v11.1 的核心：通道必须在门诊里真被调用）----"
+          grep -q "func runContainerLadder" Sources/Kernel/KernelEngine.swift || { echo "::error::KernelEngine.swift 里没有 runContainerLadder（门诊接线丢了）"; exit 1; }
+          grep -q "if runContainerLadder() { return }" Sources/Kernel/KernelEngine.swift || { echo "::error::门诊没调用 runContainerLadder —— 通道写了却没跑，跟上版一样的洞"; exit 1; }
+          grep -q "容器通道：" Sources/Kernel/KernelEngine.swift || { echo "::error::报告里没有「容器通道」那一节，失败时看不到结论"; exit 1; }
+          echo "门诊接线 ✅"
+
+          echo "---- v12 专有：身份诊断与内核按钮下线 ----"
+          grep -q "本 App 身份：" Sources/Kernel/KernelEngine.swift || { echo "::error::门诊里没有 bundle id 身份诊断（v12 用来定死冒充有没有被签名工具改掉）"; exit 1; }
+          grep -q "这版不碰内核" Sources/ContentView.swift || { echo "::error::界面还留着内核入口（v12 必须把它下线，上一版整机重启就是从这里来的）"; exit 1; }
+          echo "v12 专有校验 ✅"
 
           echo "---- 工程里必须嵌内核库 ----"
           if grep -q "libxpf.dylib" LSPakManager.xcodeproj/project.pbxproj 2>/dev/null; then
@@ -495,7 +506,7 @@ jobs:
               echo ""
               echo "在编译开始前就被拦下了，最常见的原因是仓库里的源码版本低于 11.0。"
               echo "往上翻「3 挑版本最高的源码」那一步，里面有挑中的版本号。"
-              echo "把 LSPakManager-Source-v11.0.zip 原样传到仓库根目录，再点一次 Run workflow。"
+              echo "把 LSPakManager-Source-v12.0.zip 原样传到仓库根目录，再点一次 Run workflow。"
             } > BUILD-ERROR.txt
             echo "---- BUILD-ERROR.txt ----"
             cat BUILD-ERROR.txt
